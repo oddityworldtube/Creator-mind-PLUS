@@ -17,13 +17,14 @@ import {
 } from '../types';
 
 // --- CONSTANTS ---
-// النموذج الافتراضي للنصوص والتحليل
-const DEFAULT_MODEL = "gemini-2.0-flash";
 
-// قائمة نماذج الصور التي سيتم تجربتها بالترتيب (لضمان العمل)
+// 1. نموذج النصوص والتحليل (ثابت على 2.0 فلاش كما طلبت)
+const TEXT_MODEL = "gemini-2.0-flash";
+
+// 2. نماذج توليد الصور (سيتم تجربتها بالترتيب)
 const IMAGE_MODELS = [
-    "imagen-3.0-generate-001", // الأحدث والأفضل
-    "image-generation-001"     // احتياطي
+    "imagen-3.0-generate-001", // الأحدث (جودة عالية)
+    "image-generation-001"     // القديم (احتياطي لضمان العمل)
 ];
 
 // --- Zod Schemas ---
@@ -70,11 +71,12 @@ let currentKeyIndex = 0;
 // --- Helper: Parse Keys from String ---
 const parseKeysFromString = (input: string): string[] => {
     if (!input) return [];
+    // تنظيف صارم للمفاتيح من ملفات CSV
     const cleanInput = input.replace(/[\r\n"']/g, '').trim();
     return cleanInput.split(',').map(k => k.trim()).filter(k => k.length > 0);
 };
 
-// --- Helper to handle Key Rotation & library initialization ---
+// --- Helper: Text Execution with Rotation ---
 const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => Promise<T>, apiKeyOverride?: string): Promise<T> => {
     
     let keysToUse: string[] = [];
@@ -95,18 +97,17 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
     
     for (const rawKey of keysToUse) {
         try {
-            // تنظيف المفتاح من أي شوائب CSV
             const cleanKey = rawKey.trim().replace(/[\r\n"']/g, '');
             const genAI = new GoogleGenerativeAI(cleanKey);
             return await operation(genAI);
         } catch (error: any) {
-            console.warn(`Key ending in ...${rawKey.slice(-4)} failed. Trying next...`, error);
+            console.warn(`Key ending in ...${rawKey.slice(-4)} failed. Trying next...`);
             lastError = error;
             
             const msg = error.message?.toLowerCase() || "";
             const status = error.status || 0;
 
-            // تجاهل الأخطاء والمحاولة بالمفتاح التالي
+            // تجاهل أخطاء الشبكة والصلاحيات والمحاولة بالمفتاح التالي
             if (
                 status === 404 || 
                 status === 400 || 
@@ -119,12 +120,11 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
             ) {
                  continue; 
             }
-            // لأي أخطاء أخرى، نستمر في المحاولة أيضاً
             continue; 
         }
     }
 
-    console.error("All keys failed. Last error details:", lastError);
+    console.error("All text generation keys failed.");
     throw new Error(`All keys failed. Last error: ${lastError?.message || "Unknown error"}`);
 };
 
@@ -147,7 +147,7 @@ const cleanJson = (text: string) => {
   return cleaned;
 };
 
-// --- CORE ANALYTICS ---
+// --- 1. CORE ANALYTICS (Using TEXT_MODEL: gemini-2.0-flash) ---
 
 export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], apiKey?: string): Promise<AnalysisResult> => {
     return executeWithRotation(async (genAI) => {
@@ -159,7 +159,7 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
             metrics: { views: Number(v.viewCount) }
         }));
 
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Analyze Channel: ${stats.title}. Avg Views: ${Math.round(avgViews)}.
             Videos: ${JSON.stringify(processedVideos)}
@@ -177,7 +177,7 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
 export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: string): Promise<string[]> => {
     return executeWithRotation(async (genAI) => {
         const videoTitles = videos.slice(0, 40).map(v => v.title).join('\n');
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Analyze these video titles from a YouTube channel:
             ${videoTitles}
@@ -194,7 +194,7 @@ export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: s
 
 export const generateTrendingNiches = async (category: string, apiKey?: string): Promise<{name: string, rating: number}[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Generate 5 NEW, TRENDING YouTube sub-niches for the category: "${category}".
             Output must be in **Arabic**.
@@ -209,7 +209,7 @@ export const generateTrendingNiches = async (category: string, apiKey?: string):
 export const generateLongFormIdeas = async (shorts: VideoData[], apiKey?: string): Promise<ShortsToLongResult[]> => {
     return executeWithRotation(async (genAI) => {
         const shortsList = shorts.map(s => s.title);
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `Suggest long videos from these shorts: ${JSON.stringify(shortsList)}. 
         Output JSON array {shortTitle, longIdeas[]}.
         **IMPORTANT: All ideas must be in Arabic.**`;
@@ -227,7 +227,7 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
             .slice(0, 100)
             .map(v => ({ id: v.id, title: v.title }));
 
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const mainPrompt = `
             Act as a World-Class YouTube Strategist. Optimize this video for maximum CTR and Retention.
             Video Info: Title: ${video.title} Desc: ${video.description || ""} Tags: ${video.tags?.join(',') || ""}
@@ -303,7 +303,7 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
                 reader.readAsDataURL(blob);
             });
             
-            const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+            const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
             const prompt = `
                 Analyze this YouTube thumbnail for video: "${videoTitle}".
                 Evaluate: Text readability, Face detection, Colors, Composition.
@@ -328,7 +328,7 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
 export const analyzeVideoTranscript = async (captions: string, apiKey?: string): Promise<ContentInsights | null> => {
     return executeWithRotation(async (genAI) => {
         const text = captions.substring(0, 30000); 
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Analyze this video transcript.
             Determine: Sentiment, Pacing, Key Topics, Summary, Hook Effectiveness (first few lines).
@@ -342,7 +342,7 @@ export const analyzeVideoTranscript = async (captions: string, apiKey?: string):
 
 export const generateEnhancedImagePrompt = async (videoTitle: string, videoDesc: string, apiKey?: string): Promise<string> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `Create a detailed image generation prompt for a YouTube thumbnail based on: "${videoTitle}". Describe lighting, composition, and style. Output English prompt only.`;
         const result = await model.generateContent(prompt);
         return result.response.text().trim();
@@ -355,16 +355,15 @@ export interface ImageGenOptions {
     style?: string;
 }
 
-// --- NEW: Robust Image Generation with Model Fallback ---
+// --- 2. IMAGE GENERATION (Smart Switching Logic) ---
+// This function handles the double loop (Keys x Models) to ensure image generation success
 export const generateThumbnailImage = async (options: ImageGenOptions | string, mode: 'normal' | 'composite' = 'normal', apiKey?: string): Promise<string | null> => {
     
-    // 1. Get a valid pool of keys manually
+    // 1. Prepare keys list
     let keysToUse: string[] = [];
     if (apiKey && apiKey.trim().length > 0) {
         keysToUse = parseKeysFromString(apiKey);
-    } 
-    
-    if (keysToUse.length === 0) {
+    } else {
         keysToUse = getGeminiKeys();
     }
 
@@ -376,8 +375,8 @@ export const generateThumbnailImage = async (options: ImageGenOptions | string, 
     const promptText = typeof options === 'string' ? options : options.prompt;
     const negPrompt = typeof options === 'string' ? "" : options.negativePrompt;
 
-    // 2. Loop through Keys AND Models
-    // This double loop ensures we try every key with every model until something works
+    // 2. Double Loop: Iterate through EVERY Key with EVERY Image Model
+    // This is the most robust way to find a working combination
     for (const rawKey of keysToUse) {
         const cleanKey = rawKey.trim().replace(/[\r\n"']/g, '');
         
@@ -402,14 +401,14 @@ export const generateThumbnailImage = async (options: ImageGenOptions | string, 
                 });
 
                 if (!response.ok) {
-                    // Log warning but continue to next model/key
-                    // console.warn(`Image gen failed with key ...${cleanKey.slice(-4)} on model ${modelName}`);
+                    // If error is 404 (Not Found) -> Model not enabled for this key -> Try next model
+                    // If error is 400/403 -> Key issue -> Try next key
                     continue; 
                 }
 
                 const data = await response.json();
                 
-                // Check for valid response structure from Imagen
+                // Check for valid response structure
                 if (data.predictions && data.predictions[0] && data.predictions[0].bytesBase64Encoded) {
                     return `data:image/jpeg;base64,${data.predictions[0].bytesBase64Encoded}`;
                 } else if (data.predictions && data.predictions[0] && data.predictions[0].mimeType && data.predictions[0].bytesBase64Encoded) {
@@ -417,19 +416,19 @@ export const generateThumbnailImage = async (options: ImageGenOptions | string, 
                 }
                 
             } catch (e) {
-                console.error("Image generation connection error", e);
-                // Continue to next
+                console.error(`Image gen failed for key ...${cleanKey.slice(-4)} on model ${modelName}`, e);
+                // Continue to next combination
             }
         }
     }
 
-    console.error("All keys and models failed to generate image.");
+    console.error("All keys and image models failed to generate image.");
     return null;
 };
 
 export const analyzeCompetitors = async (myStats: ChannelStats, competitor: CompetitorData, apiKey?: string): Promise<CompetitorAnalysisResult> => {
     return executeWithRotation(async (genAI) => {
-         const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+         const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
          const prompt = `Compare channel ${myStats.title} with ${competitor.title}. Return JSON with strengths, weaknesses, opportunities, actionableTips, comparisonSummary, competitorContentIdeas. Output in Arabic.`;
          const result = await model.generateContent(prompt);
          return JSON.parse(cleanJson(result.response.text() || "{}"));
@@ -440,7 +439,7 @@ export const analyzeCompetitors = async (myStats: ChannelStats, competitor: Comp
 
 export const generateTitlesOnly = async (currentTitle: string, apiKey?: string): Promise<ScoredTitle[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Generate 5 viral YouTube titles based on this topic: "${currentTitle}".
             Analyze the psychology (Curiosity, Urgency, Emotion).
@@ -455,7 +454,7 @@ export const generateTitlesOnly = async (currentTitle: string, apiKey?: string):
 
 export const generateDescriptionOnly = async (title: string, currentDesc: string, apiKey?: string): Promise<string> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Write a high-retention, SEO-optimized YouTube description in **ARABIC** for:
             Title: ${title}
@@ -470,7 +469,7 @@ export const generateDescriptionOnly = async (title: string, currentDesc: string
 
 export const generateTagsOnly = async (title: string, currentTags: string[], apiKey?: string): Promise<ScoredTag[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Suggest 15 high-volume search tags for YouTube video: "${title}".
             Current tags: ${currentTags.join(',')}.
@@ -484,7 +483,7 @@ export const generateTagsOnly = async (title: string, currentTags: string[], api
 
 export const generateThumbnailHooks = async (title: string, language: string = 'Arabic', apiKey?: string): Promise<ScoredHook[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Generate 10 short, punchy text overlays (hooks) for a YouTube thumbnail.
             Video Title: "${title}".
@@ -499,7 +498,7 @@ export const generateThumbnailHooks = async (title: string, language: string = '
 
 export const evaluateMetadata = async (title: string, description: string, tags: string[], apiKey?: string): Promise<any> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
+        const model = genAI.getGenerativeModel({ model: TEXT_MODEL });
         const prompt = `
             Evaluate this YouTube metadata quality (0-100):
             Title: ${title}
@@ -523,8 +522,8 @@ export const generateAdvancedIdeas = async (
     apiKey?: string
 ): Promise<Idea[]> => {
     return executeWithRotation(async (genAI) => {
-        // Use the requested model if provided, otherwise default to 2.0
-        const finalModel = modelName || DEFAULT_MODEL;
+        // Fallback to TEXT_MODEL if the requested model is not found or standard
+        const finalModel = modelName || TEXT_MODEL;
         
         const model = genAI.getGenerativeModel({ model: finalModel });
         const prompt = `
