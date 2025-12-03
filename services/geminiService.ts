@@ -57,12 +57,10 @@ const getGeminiKeys = (): string[] => {
 
 let currentKeyIndex = 0;
 
-// --- Helper: Parse Keys from String (Handles Single, Comma-Separated, and CSV artifacts) ---
+// --- Helper: Parse Keys from String ---
 const parseKeysFromString = (input: string): string[] => {
     if (!input) return [];
-    // 1. Remove quotes (" or ') and newlines/spaces that come from CSV
     const cleanInput = input.replace(/[\r\n"']/g, '').trim();
-    // 2. Split by comma
     return cleanInput.split(',').map(k => k.trim()).filter(k => k.length > 0);
 };
 
@@ -72,12 +70,10 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
     // 1. Determine which pool of keys to use
     let keysToUse: string[] = [];
 
-    // Check if Channel-Specific Key(s) provided
     if (apiKeyOverride && apiKeyOverride.trim().length > 0) {
         keysToUse = parseKeysFromString(apiKeyOverride);
     } 
     
-    // Fallback to Global Keys if no channel keys found
     if (keysToUse.length === 0) {
         keysToUse = getGeminiKeys();
     }
@@ -89,10 +85,6 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
     // 2. Execute Rotation Logic
     let lastError: any = null;
     
-    // If we are using global keys, we might want to start from currentKeyIndex to distribute load
-    // But for channel specific (which might be a fresh list), we start from 0.
-    // To keep it simple: Try all keys in the list until one works.
-    
     for (const key of keysToUse) {
         try {
             const genAI = new GoogleGenerativeAI(key);
@@ -101,21 +93,31 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
             console.warn(`Key ending in ...${key.slice(-4)} failed. Trying next...`, error);
             lastError = error;
             
-            // Check for specific errors that shouldn't trigger retry (like Invalid Argument / Bad Request meaning prompt is wrong)
-            // But usually "API Key not valid" or "Quota exceeded" are what we want to catch.
-            if (error.message?.includes('API key not valid')) {
-                 continue; // Try next key
-            }
-            if (error.status === 429 || error.message?.includes('429')) {
-                 continue; // Quota exceeded, try next key
+            const msg = error.message?.toLowerCase() || "";
+            const status = error.status || 0;
+
+            // --- FIX: Aggressive Error Catching ---
+            // Catch 404 (Model not found for this key), 400 (Bad Request/Key), 403 (Permission), 429 (Quota)
+            if (
+                status === 404 || 
+                status === 400 || 
+                status === 403 || 
+                status === 429 || 
+                msg.includes('not found') || 
+                msg.includes('not supported') || 
+                msg.includes('api key') ||
+                msg.includes('quota')
+            ) {
+                 continue; // Ignore this key and try the next one immediately
             }
             
-            // If we have many keys, keep trying.
+            // If it's a network error or something else, we might still want to try next key just in case
+            continue; 
         }
     }
 
-    console.error("All keys failed. Last error:", lastError);
-    throw new Error(lastError?.message || "All provided API keys failed to generate content.");
+    console.error("All keys failed. Last error details:", lastError);
+    throw new Error(`All keys failed. Last error: ${lastError?.message || "Unknown error"}`);
 };
 
 const cleanJson = (text: string) => {
