@@ -16,6 +16,10 @@ import {
     ContentInsights
 } from '../types';
 
+// --- CONSTANTS ---
+// هنا نحدد النموذج الافتراضي ليكون 2.0 كما طلبت
+const DEFAULT_MODEL = "gemini-2.0-flash";
+
 // --- Zod Schemas ---
 
 const PsychologySchema = z.object({
@@ -67,7 +71,6 @@ const parseKeysFromString = (input: string): string[] => {
 // --- Helper to handle Key Rotation & library initialization ---
 const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => Promise<T>, apiKeyOverride?: string): Promise<T> => {
     
-    // 1. Determine which pool of keys to use
     let keysToUse: string[] = [];
 
     if (apiKeyOverride && apiKeyOverride.trim().length > 0) {
@@ -82,7 +85,6 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
         throw new Error("No Gemini API Keys found. Please add keys in Settings or Channel Profile.");
     }
 
-    // 2. Execute Rotation Logic
     let lastError: any = null;
     
     for (const key of keysToUse) {
@@ -96,8 +98,6 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
             const msg = error.message?.toLowerCase() || "";
             const status = error.status || 0;
 
-            // --- FIX: Aggressive Error Catching ---
-            // Catch 404 (Model not found for this key), 400 (Bad Request/Key), 403 (Permission), 429 (Quota)
             if (
                 status === 404 || 
                 status === 400 || 
@@ -108,10 +108,8 @@ const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => 
                 msg.includes('api key') ||
                 msg.includes('quota')
             ) {
-                 continue; // Ignore this key and try the next one immediately
+                 continue; 
             }
-            
-            // If it's a network error or something else, we might still want to try next key just in case
             continue; 
         }
     }
@@ -151,7 +149,8 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
             metrics: { views: Number(v.viewCount) }
         }));
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Analyze Channel: ${stats.title}. Avg Views: ${Math.round(avgViews)}.
             Videos: ${JSON.stringify(processedVideos)}
@@ -169,7 +168,8 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
 export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: string): Promise<string[]> => {
     return executeWithRotation(async (genAI) => {
         const videoTitles = videos.slice(0, 40).map(v => v.title).join('\n');
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Analyze these video titles from a YouTube channel:
             ${videoTitles}
@@ -186,7 +186,8 @@ export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: s
 
 export const generateTrendingNiches = async (category: string, apiKey?: string): Promise<{name: string, rating: number}[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Generate 5 NEW, TRENDING YouTube sub-niches for the category: "${category}".
             Output must be in **Arabic**.
@@ -201,7 +202,8 @@ export const generateTrendingNiches = async (category: string, apiKey?: string):
 export const generateLongFormIdeas = async (shorts: VideoData[], apiKey?: string): Promise<ShortsToLongResult[]> => {
     return executeWithRotation(async (genAI) => {
         const shortsList = shorts.map(s => s.title);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `Suggest long videos from these shorts: ${JSON.stringify(shortsList)}. 
         Output JSON array {shortTitle, longIdeas[]}.
         **IMPORTANT: All ideas must be in Arabic.**`;
@@ -219,7 +221,8 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
             .slice(0, 100)
             .map(v => ({ id: v.id, title: v.title }));
 
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const mainPrompt = `
             Act as a World-Class YouTube Strategist. Optimize this video for maximum CTR and Retention.
             Video Info: Title: ${video.title} Desc: ${video.description || ""} Tags: ${video.tags?.join(',') || ""}
@@ -241,13 +244,11 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
         const result = await model.generateContent(mainPrompt);
         const response = await result.response;
         
-        // Vision Analysis (Optional)
         let visionResult = null;
         if (video.thumbnail) {
             visionResult = await analyzeThumbnailVision(video.thumbnail, video.title, apiKey);
         }
 
-        // Transcript Analysis (Optional)
         let transcriptResult = null;
         if (video.captions && video.captions.length > 0) {
             const captionText = video.captions.map(c => c.text).join(" ");
@@ -287,19 +288,18 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
         try {
             const response = await fetch(thumbnailUrl);
             const blob = await response.blob();
-            // Convert to Base64 (Without Data URL Prefix) for the new SDK
             const base64Data = await new Promise<string>((resolve) => {
                 const reader = new FileReader();
                 reader.onloadend = () => {
                     const result = reader.result as string;
-                    // Split to remove "data:image/jpeg;base64," part
                     const base64 = result.split(',')[1];
                     resolve(base64);
                 };
                 reader.readAsDataURL(blob);
             });
             
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            // UPDATED TO 2.0
+            const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
             const prompt = `
                 Analyze this YouTube thumbnail for video: "${videoTitle}".
                 Evaluate: Text readability, Face detection, Colors, Composition.
@@ -323,8 +323,9 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
 
 export const analyzeVideoTranscript = async (captions: string, apiKey?: string): Promise<ContentInsights | null> => {
     return executeWithRotation(async (genAI) => {
-        const text = captions.substring(0, 30000); // Limit text length
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const text = captions.substring(0, 30000); 
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Analyze this video transcript.
             Determine: Sentiment, Pacing, Key Topics, Summary, Hook Effectiveness (first few lines).
@@ -338,7 +339,8 @@ export const analyzeVideoTranscript = async (captions: string, apiKey?: string):
 
 export const generateEnhancedImagePrompt = async (videoTitle: string, videoDesc: string, apiKey?: string): Promise<string> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `Create a detailed image generation prompt for a YouTube thumbnail based on: "${videoTitle}". Describe lighting, composition, and style. Output English prompt only.`;
         const result = await model.generateContent(prompt);
         return result.response.text().trim();
@@ -358,7 +360,8 @@ export const generateThumbnailImage = async (options: ImageGenOptions | string, 
 
 export const analyzeCompetitors = async (myStats: ChannelStats, competitor: CompetitorData, apiKey?: string): Promise<CompetitorAnalysisResult> => {
     return executeWithRotation(async (genAI) => {
-         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+         // UPDATED TO 2.0
+         const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
          const prompt = `Compare channel ${myStats.title} with ${competitor.title}. Return JSON with strengths, weaknesses, opportunities, actionableTips, comparisonSummary, competitorContentIdeas. Output in Arabic.`;
          const result = await model.generateContent(prompt);
          return JSON.parse(cleanJson(result.response.text() || "{}"));
@@ -369,7 +372,8 @@ export const analyzeCompetitors = async (myStats: ChannelStats, competitor: Comp
 
 export const generateTitlesOnly = async (currentTitle: string, apiKey?: string): Promise<ScoredTitle[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Generate 5 viral YouTube titles based on this topic: "${currentTitle}".
             Analyze the psychology (Curiosity, Urgency, Emotion).
@@ -384,7 +388,8 @@ export const generateTitlesOnly = async (currentTitle: string, apiKey?: string):
 
 export const generateDescriptionOnly = async (title: string, currentDesc: string, apiKey?: string): Promise<string> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Write a high-retention, SEO-optimized YouTube description in **ARABIC** for:
             Title: ${title}
@@ -399,7 +404,8 @@ export const generateDescriptionOnly = async (title: string, currentDesc: string
 
 export const generateTagsOnly = async (title: string, currentTags: string[], apiKey?: string): Promise<ScoredTag[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Suggest 15 high-volume search tags for YouTube video: "${title}".
             Current tags: ${currentTags.join(',')}.
@@ -413,7 +419,8 @@ export const generateTagsOnly = async (title: string, currentTags: string[], api
 
 export const generateThumbnailHooks = async (title: string, language: string = 'Arabic', apiKey?: string): Promise<ScoredHook[]> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Generate 10 short, punchy text overlays (hooks) for a YouTube thumbnail.
             Video Title: "${title}".
@@ -428,7 +435,8 @@ export const generateThumbnailHooks = async (title: string, language: string = '
 
 export const evaluateMetadata = async (title: string, description: string, tags: string[], apiKey?: string): Promise<any> => {
     return executeWithRotation(async (genAI) => {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // UPDATED TO 2.0
+        const model = genAI.getGenerativeModel({ model: DEFAULT_MODEL });
         const prompt = `
             Evaluate this YouTube metadata quality (0-100):
             Title: ${title}
@@ -452,10 +460,12 @@ export const generateAdvancedIdeas = async (
     apiKey?: string
 ): Promise<Idea[]> => {
     return executeWithRotation(async (genAI) => {
-        // Map any legacy or 2.x models to the stable 1.5-flash for web compatibility
-        const safeModel = (modelName.includes("2.0") || modelName.includes("2.5")) ? "gemini-1.5-flash" : "gemini-1.5-flash";
+        // FIXED: Removed the safety fallback that forced 1.5-flash
+        // Now it uses the requested modelName, or defaults to 2.0 if not provided
         
-        const model = genAI.getGenerativeModel({ model: safeModel });
+        const finalModel = modelName || DEFAULT_MODEL;
+        
+        const model = genAI.getGenerativeModel({ model: finalModel });
         const prompt = `
             Generate ${count} viral YouTube video ideas for niches: "${niches}".
             Focus on: ${positivePrompt}. Avoid: ${negativePrompt}.
