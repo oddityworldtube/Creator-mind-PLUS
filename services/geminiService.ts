@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { z } from "zod";
 import { 
     ChannelStats, 
@@ -53,22 +53,26 @@ const getGeminiKeys = (): string[] => {
             }
         } catch (e) {}
     }
-    return process.env.API_KEY ? [process.env.API_KEY] : [];
+    // Fallback to Env if defined (handled by Vite replace at build time)
+    return typeof process !== 'undefined' && process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : [];
 };
 
 let currentKeyIndex = 0;
 
-const executeWithRotation = async <T>(operation: (ai: GoogleGenAI) => Promise<T>, apiKeyOverride?: string): Promise<T> => {
+// Helper to handle Key Rotation & library initialization
+const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => Promise<T>, apiKeyOverride?: string): Promise<T> => {
+    // 1. Try Specific Key first (From Channel Settings)
     if (apiKeyOverride && apiKeyOverride.trim().length > 0) {
         try {
-            const ai = new GoogleGenAI({ apiKey: apiKeyOverride });
-            return await operation(ai);
+            const genAI = new GoogleGenerativeAI(apiKeyOverride);
+            return await operation(genAI);
         } catch (error) {
             console.error("Channel specific Gemini Key failed:", error);
             throw new Error("Invalid Channel Gemini API Key");
         }
     }
 
+    // 2. Try Global Keys with Rotation
     const keys = getGeminiKeys();
     if (keys.length === 0) throw new Error("No Gemini API Keys found");
     
@@ -76,8 +80,8 @@ const executeWithRotation = async <T>(operation: (ai: GoogleGenAI) => Promise<T>
     while (attempts < keys.length) {
         const key = keys[currentKeyIndex];
         try {
-            const ai = new GoogleGenAI({ apiKey: key });
-            return await operation(ai);
+            const genAI = new GoogleGenerativeAI(key);
+            return await operation(genAI);
         } catch (error: any) {
             console.warn(`Key ...${key.slice(-4)} failed`, error);
             currentKeyIndex = (currentKeyIndex + 1) % keys.length;
@@ -110,7 +114,7 @@ const cleanJson = (text: string) => {
 // --- CORE ANALYTICS ---
 
 export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], apiKey?: string): Promise<AnalysisResult> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
         const totalViews = videos.reduce((acc, v) => acc + Number(v.viewCount), 0);
         const avgViews = totalViews / (videos.length || 1);
         const processedVideos = videos.slice(0, 30).map(v => ({
@@ -119,26 +123,26 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
             metrics: { views: Number(v.viewCount) }
         }));
 
+        // Using gemini-1.5-flash as it is stable for free tier
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Analyze Channel: ${stats.title}. Avg Views: ${Math.round(avgViews)}.
             Videos: ${JSON.stringify(processedVideos)}
             **IMPORTANT**: Output the analysis strictly in **ARABIC LANGUAGE**.
             Return JSON: { "strategy": "...", "videoSuggestions": "...", "overallScore": 0-100 }
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
         
-        const raw = JSON.parse(cleanJson(response.text || "{}"));
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const raw = JSON.parse(cleanJson(response.text() || "{}"));
         return raw;
     }, apiKey);
 };
 
 export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: string): Promise<string[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
         const videoTitles = videos.slice(0, 40).map(v => v.title).join('\n');
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Analyze these video titles from a YouTube channel:
             ${videoTitles}
@@ -146,54 +150,49 @@ export const analyzeChannelNiches = async (videos: {title: string}[], apiKey?: s
             Focus on high-traffic, search-friendly terms in **Arabic**.
             Return ONLY a JSON array of strings.
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        const raw = JSON.parse(cleanJson(response.text || "[]"));
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const raw = JSON.parse(cleanJson(response.text() || "[]"));
         return z.array(z.string()).parse(raw);
     }, apiKey);
 };
 
 export const generateTrendingNiches = async (category: string, apiKey?: string): Promise<{name: string, rating: number}[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Generate 5 NEW, TRENDING YouTube sub-niches for the category: "${category}".
             Output must be in **Arabic**.
             Return JSON Array: [{ "name": "Niche Name", "rating": 95 }]
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "[]"));
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return JSON.parse(cleanJson(response.text() || "[]"));
     }, apiKey);
 };
 
 export const generateLongFormIdeas = async (shorts: VideoData[], apiKey?: string): Promise<ShortsToLongResult[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
         const shortsList = shorts.map(s => s.title);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `Suggest long videos from these shorts: ${JSON.stringify(shortsList)}. 
         Output JSON array {shortTitle, longIdeas[]}.
         **IMPORTANT: All ideas must be in Arabic.**`;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "[]"));
+        
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        return JSON.parse(cleanJson(response.text() || "[]"));
     }, apiKey);
 };
 
 export const optimizeVideoMetadata = async (video: VideoData, channelVideos: VideoData[], apiKey?: string, hookLanguage: string = 'Arabic'): Promise<OptimizationResult> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
         const channelContext = channelVideos
             .filter(v => v.id !== video.id)
             .slice(0, 100)
             .map(v => ({ id: v.id, title: v.title }));
 
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const mainPrompt = `
             Act as a World-Class YouTube Strategist. Optimize this video for maximum CTR and Retention.
             Video Info: Title: ${video.title} Desc: ${video.description || ""} Tags: ${video.tags?.join(',') || ""}
@@ -212,12 +211,9 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
             Return JSON matching OptimizationResult structure.
         `;
 
-        const mainResponse = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: mainPrompt,
-            config: { responseMimeType: "application/json" }
-        });
-
+        const result = await model.generateContent(mainPrompt);
+        const response = await result.response;
+        
         // Vision Analysis (Optional)
         let visionResult = null;
         if (video.thumbnail) {
@@ -231,8 +227,7 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
             transcriptResult = await analyzeVideoTranscript(captionText, apiKey);
         }
 
-        const rawMain = JSON.parse(cleanJson(mainResponse.text || "{}"));
-        
+        const rawMain = JSON.parse(cleanJson(response.text() || "{}"));
         const parsedMain = OptimizationResultSchema.safeParse(rawMain);
         
         let finalMain;
@@ -261,18 +256,23 @@ export const optimizeVideoMetadata = async (video: VideoData, channelVideos: Vid
 };
 
 export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: string, apiKey?: string): Promise<ThumbnailAnalysis | null> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
         try {
-            // Attempt to fetch if accessible (CORS might block this in browser)
             const response = await fetch(thumbnailUrl);
             const blob = await response.blob();
-            const base64 = await new Promise<string>((resolve) => {
+            // Convert to Base64 (Without Data URL Prefix) for the new SDK
+            const base64Data = await new Promise<string>((resolve) => {
                 const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result as string);
+                reader.onloadend = () => {
+                    const result = reader.result as string;
+                    // Split to remove "data:image/jpeg;base64," part
+                    const base64 = result.split(',')[1];
+                    resolve(base64);
+                };
                 reader.readAsDataURL(blob);
             });
-            const base64Data = base64.split(',')[1];
             
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
             const prompt = `
                 Analyze this YouTube thumbnail for video: "${videoTitle}".
                 Evaluate: Text readability, Face detection, Colors, Composition.
@@ -281,16 +281,12 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
                 Return JSON: { "score": 80, "critique": ["text too small"], "improvements": ["make text bigger"], "colorProfile": "Vibrant", "faceDetected": true, "textReadability": "Medium" }
             `;
             
-            const aiRes = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: [
-                    { inlineData: { mimeType: blob.type, data: base64Data } },
-                    { text: prompt }
-                ],
-                config: { responseMimeType: "application/json" }
-            });
+            const result = await model.generateContent([
+                prompt,
+                { inlineData: { data: base64Data, mimeType: blob.type } }
+            ]);
             
-            return JSON.parse(cleanJson(aiRes.text || "{}"));
+            return JSON.parse(cleanJson(result.response.text() || "{}"));
         } catch (e) {
             console.warn("Vision analysis failed", e);
             return null;
@@ -299,31 +295,26 @@ export const analyzeThumbnailVision = async (thumbnailUrl: string, videoTitle: s
 };
 
 export const analyzeVideoTranscript = async (captions: string, apiKey?: string): Promise<ContentInsights | null> => {
-    return executeWithRotation(async (ai) => {
-        const text = captions.substring(0, 50000); 
+    return executeWithRotation(async (genAI) => {
+        const text = captions.substring(0, 30000); // Limit text length
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Analyze this video transcript.
             Determine: Sentiment, Pacing, Key Topics, Summary, Hook Effectiveness (first few lines).
             Output in **ARABIC**.
             Return JSON matching ContentInsights interface: { "summary": "...", "keyTopics": ["..."], "sentiment": "Positive", "pacingScore": 80, "hookEffectiveness": 90 }
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [
-                { text: prompt },
-                { text: text }
-            ],
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "{}"));
+        const result = await model.generateContent([prompt, text]);
+        return JSON.parse(cleanJson(result.response.text() || "{}"));
     }, apiKey);
 };
 
 export const generateEnhancedImagePrompt = async (videoTitle: string, videoDesc: string, apiKey?: string): Promise<string> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `Create a detailed image generation prompt for a YouTube thumbnail based on: "${videoTitle}". Describe lighting, composition, and style. Output English prompt only.`;
-        const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
-        return response.text.trim();
+        const result = await model.generateContent(prompt);
+        return result.response.text().trim();
     }, apiKey);
 };
 
@@ -334,59 +325,39 @@ export interface ImageGenOptions {
 }
 
 export const generateThumbnailImage = async (options: ImageGenOptions | string, mode: 'normal' | 'composite' = 'normal', apiKey?: string): Promise<string | null> => {
-    return executeWithRotation(async (ai) => {
-        try {
-            let finalPrompt = typeof options === 'string' ? options : options.prompt;
-            let style = typeof options === 'string' ? "" : options.style;
-            if (!style) style = "High Quality YouTube Thumbnail, 8k";
-            finalPrompt = `${finalPrompt}, ${style}`;
-            
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
-                contents: finalPrompt,
-            });
-            if (response.candidates && response.candidates[0].content.parts) {
-                for (const part of response.candidates[0].content.parts) {
-                    if (part.inlineData) {
-                        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                    }
-                }
-            }
-            return null;
-        } catch (e) { return null; }
-    }, apiKey);
+    console.warn("Image generation via API Key is limited/unavailable in the standard Web SDK. Please use Vertex AI for full support.");
+    return null;
 };
 
 export const analyzeCompetitors = async (myStats: ChannelStats, competitor: CompetitorData, apiKey?: string): Promise<CompetitorAnalysisResult> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
          const prompt = `Compare channel ${myStats.title} with ${competitor.title}. Return JSON with strengths, weaknesses, opportunities, actionableTips, comparisonSummary, competitorContentIdeas. Output in Arabic.`;
-         const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt, config: { responseMimeType: "application/json"} });
-         return JSON.parse(cleanJson(response.text || "{}"));
+         const result = await model.generateContent(prompt);
+         return JSON.parse(cleanJson(result.response.text() || "{}"));
     }, apiKey);
 };
 
-// --- Single Task Generators (Fix for "Buttons not working") ---
+// --- Single Task Generators ---
 
 export const generateTitlesOnly = async (currentTitle: string, apiKey?: string): Promise<ScoredTitle[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Generate 5 viral YouTube titles based on this topic: "${currentTitle}".
             Analyze the psychology (Curiosity, Urgency, Emotion).
             Output strictly in **ARABIC**.
             Return JSON: { "titles": [{ "title": "...", "score": 90, "psychology": { "curiosityScore": 85, "urgencyScore": 70, "emotionType": "Shock", "powerWords": ["word1"], "analysis": "brief reason" } }] }
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        const raw = JSON.parse(cleanJson(response.text || "{}"));
+        const result = await model.generateContent(prompt);
+        const raw = JSON.parse(cleanJson(result.response.text() || "{}"));
         return raw.titles || [];
     }, apiKey);
 };
 
 export const generateDescriptionOnly = async (title: string, currentDesc: string, apiKey?: string): Promise<string> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Write a high-retention, SEO-optimized YouTube description in **ARABIC** for:
             Title: ${title}
@@ -394,33 +365,28 @@ export const generateDescriptionOnly = async (title: string, currentDesc: string
             Include: Hook, content summary, timestamps placeholder, and call to action.
             Return plain text.
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt
-        });
-        return response.text || "";
+        const result = await model.generateContent(prompt);
+        return result.response.text() || "";
     }, apiKey);
 };
 
 export const generateTagsOnly = async (title: string, currentTags: string[], apiKey?: string): Promise<ScoredTag[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Suggest 15 high-volume search tags for YouTube video: "${title}".
             Current tags: ${currentTags.join(',')}.
             Output in **ARABIC**.
             Return JSON: [{ "tag": "...", "score": 95 }]
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "[]"));
+        const result = await model.generateContent(prompt);
+        return JSON.parse(cleanJson(result.response.text() || "[]"));
     }, apiKey);
 };
 
 export const generateThumbnailHooks = async (title: string, language: string = 'Arabic', apiKey?: string): Promise<ScoredHook[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Generate 10 short, punchy text overlays (hooks) for a YouTube thumbnail.
             Video Title: "${title}".
@@ -428,17 +394,14 @@ export const generateThumbnailHooks = async (title: string, language: string = '
             Max 3-5 words per hook.
             Return JSON: [{ "hook": "...", "score": 90 }]
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "[]"));
+        const result = await model.generateContent(prompt);
+        return JSON.parse(cleanJson(result.response.text() || "[]"));
     }, apiKey);
 };
 
 export const evaluateMetadata = async (title: string, description: string, tags: string[], apiKey?: string): Promise<any> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Evaluate this YouTube metadata quality (0-100):
             Title: ${title}
@@ -447,12 +410,8 @@ export const evaluateMetadata = async (title: string, description: string, tags:
             Output in **ARABIC**.
             Return JSON: { "score": 85, "advice": "Short advice..." }
         `;
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        return JSON.parse(cleanJson(response.text || "{}"));
+        const result = await model.generateContent(prompt);
+        return JSON.parse(cleanJson(result.response.text() || "{}"));
     }, apiKey);
 };
 
@@ -461,11 +420,15 @@ export const generateAdvancedIdeas = async (
     count: number, 
     positivePrompt: string, 
     negativePrompt: string, 
-    model: string, 
+    modelName: string, 
     style: string, 
     apiKey?: string
 ): Promise<Idea[]> => {
-    return executeWithRotation(async (ai) => {
+    return executeWithRotation(async (genAI) => {
+        // Map any legacy or 2.x models to the stable 1.5-flash for web compatibility
+        const safeModel = (modelName.includes("2.0") || modelName.includes("2.5")) ? "gemini-1.5-flash" : "gemini-1.5-flash";
+        
+        const model = genAI.getGenerativeModel({ model: safeModel });
         const prompt = `
             Generate ${count} viral YouTube video ideas for niches: "${niches}".
             Focus on: ${positivePrompt}. Avoid: ${negativePrompt}.
@@ -474,14 +437,8 @@ export const generateAdvancedIdeas = async (
             Return JSON: [{ "id": "1", "title": "...", "description": "...", "score": 90, "originalLine": "..." }]
         `;
         
-        // Pass selected model from UI, defaults to flash if not provided
-        const response = await ai.models.generateContent({
-            model: model || "gemini-2.5-flash",
-            contents: prompt,
-            config: { responseMimeType: "application/json" }
-        });
-        
-        const raw = JSON.parse(cleanJson(response.text || "[]"));
+        const result = await model.generateContent(prompt);
+        const raw = JSON.parse(cleanJson(result.response.text() || "[]"));
         return raw.map((item: any, idx: number) => ({
             ...item,
             id: item.id || Date.now().toString() + idx,
