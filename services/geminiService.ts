@@ -46,50 +46,76 @@ const getGeminiKeys = (): string[] => {
     const savedSettings = localStorage.getItem('yt_analyzer_settings');
     if (savedSettings) {
         try {
-            // Check if encrypted
             if (!savedSettings.startsWith('enc_')) {
                 const parsed = JSON.parse(savedSettings);
                 if (parsed.geminiApiKeys && parsed.geminiApiKeys.length > 0) return parsed.geminiApiKeys;
             }
         } catch (e) {}
     }
-    // Fallback to Env if defined (handled by Vite replace at build time)
     return typeof process !== 'undefined' && process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : [];
 };
 
 let currentKeyIndex = 0;
 
-// Helper to handle Key Rotation & library initialization
+// --- Helper: Parse Keys from String (Handles Single, Comma-Separated, and CSV artifacts) ---
+const parseKeysFromString = (input: string): string[] => {
+    if (!input) return [];
+    // 1. Remove quotes (" or ') and newlines/spaces that come from CSV
+    const cleanInput = input.replace(/[\r\n"']/g, '').trim();
+    // 2. Split by comma
+    return cleanInput.split(',').map(k => k.trim()).filter(k => k.length > 0);
+};
+
+// --- Helper to handle Key Rotation & library initialization ---
 const executeWithRotation = async <T>(operation: (genAI: GoogleGenerativeAI) => Promise<T>, apiKeyOverride?: string): Promise<T> => {
-    // 1. Try Specific Key first (From Channel Settings)
+    
+    // 1. Determine which pool of keys to use
+    let keysToUse: string[] = [];
+
+    // Check if Channel-Specific Key(s) provided
     if (apiKeyOverride && apiKeyOverride.trim().length > 0) {
-        try {
-            const genAI = new GoogleGenerativeAI(apiKeyOverride);
-            return await operation(genAI);
-        } catch (error) {
-            console.error("Channel specific Gemini Key failed:", error);
-            throw new Error("Invalid Channel Gemini API Key");
-        }
+        keysToUse = parseKeysFromString(apiKeyOverride);
+    } 
+    
+    // Fallback to Global Keys if no channel keys found
+    if (keysToUse.length === 0) {
+        keysToUse = getGeminiKeys();
     }
 
-    // 2. Try Global Keys with Rotation
-    const keys = getGeminiKeys();
-    if (keys.length === 0) throw new Error("No Gemini API Keys found");
+    if (keysToUse.length === 0) {
+        throw new Error("No Gemini API Keys found. Please add keys in Settings or Channel Profile.");
+    }
+
+    // 2. Execute Rotation Logic
+    let lastError: any = null;
     
-    let attempts = 0;
-    while (attempts < keys.length) {
-        const key = keys[currentKeyIndex];
+    // If we are using global keys, we might want to start from currentKeyIndex to distribute load
+    // But for channel specific (which might be a fresh list), we start from 0.
+    // To keep it simple: Try all keys in the list until one works.
+    
+    for (const key of keysToUse) {
         try {
             const genAI = new GoogleGenerativeAI(key);
             return await operation(genAI);
         } catch (error: any) {
-            console.warn(`Key ...${key.slice(-4)} failed`, error);
-            currentKeyIndex = (currentKeyIndex + 1) % keys.length;
-            attempts++;
-            if (attempts >= keys.length) throw error;
+            console.warn(`Key ending in ...${key.slice(-4)} failed. Trying next...`, error);
+            lastError = error;
+            
+            // Check for specific errors that shouldn't trigger retry (like Invalid Argument / Bad Request meaning prompt is wrong)
+            // But usually "API Key not valid" or "Quota exceeded" are what we want to catch.
+            if (error.message?.includes('API key not valid')) {
+                 continue; // Try next key
+            }
+            if (error.status === 429 || error.message?.includes('429')) {
+                 continue; // Quota exceeded, try next key
+            }
+            
+            // If we have many keys, keep trying.
         }
     }
-    throw new Error("All API keys failed");
+
+    console.error("All keys failed. Last error:", lastError);
+    throw new Error(lastError?.message || "All provided API keys failed to generate content.");
 };
 
 const cleanJson = (text: string) => {
@@ -123,7 +149,6 @@ export const analyzeChannel = async (stats: ChannelStats, videos: VideoData[], a
             metrics: { views: Number(v.viewCount) }
         }));
 
-        // Using gemini-1.5-flash as it is stable for free tier
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const prompt = `
             Analyze Channel: ${stats.title}. Avg Views: ${Math.round(avgViews)}.
